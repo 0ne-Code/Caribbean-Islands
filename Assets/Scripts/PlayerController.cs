@@ -5,19 +5,19 @@ using UnityEngine.InputSystem;
 public class PlayerController : MonoBehaviour
 {
     [Header("Movement")]
-    [SerializeField] private float moveSpeed;
-    [SerializeField] private float sprintMultiplier;
+    [SerializeField] private float moveSpeed = 3f;
+    [SerializeField] private float sprintMultiplier = 2f;
     [SerializeField] private float currentSpeed;
     [SerializeField] private float sprintTransitionSpeed = 10f;
 
     [Header("Jump")]
-    [SerializeField] private float jumpForce;
+    [SerializeField] private float jumpForce = 8f;
     [SerializeField] private float verticalVel;
 
     [Header("Ground Check")]
+    [SerializeField] private float castPosOffset = 0.8f;
+    [SerializeField] private float sphereRadius = 0.3f;
     [SerializeField] private bool isGrounded;
-    [SerializeField] private float castPosOffset;
-    [SerializeField] private float sphereRadius;
     [SerializeField] private LayerMask layerMask;
 
     private const float gravity = -19.62f;
@@ -33,6 +33,7 @@ public class PlayerController : MonoBehaviour
 
     public bool IsGrounded => isGrounded;
     public bool IsSprinting => playerInput.Player.Sprint.IsPressed();
+    public PlayerInputActions InputActions => playerInput;
 
     void Awake()
     {
