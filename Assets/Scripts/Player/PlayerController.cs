@@ -1,4 +1,3 @@
-
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -20,12 +19,27 @@ public class PlayerController : MonoBehaviour
     [SerializeField] private bool isGrounded;
     [SerializeField] private LayerMask layerMask;
 
-    private const float gravity = -19.62f;
+    [Header("Moving Platforms (ships)")]
+    [Tooltip("Turn the view with the ship while standing on it.")]
+    [SerializeField] private bool inheritPlatformYaw = true;
+    [Tooltip("How long (seconds) you keep the ship's motion after leaving the deck, e.g. mid-jump.")]
+    [SerializeField] private float platformDetachTime = 0.5f;
 
+    [Header("References")]
     [SerializeField] private MouseLook mouseLook;
+    [SerializeField] private Camera playerCamera;
+
+    private const float gravity = -19.62f;
+    private const int GroundBufferSize = 8;
+
+    private readonly Collider[] groundHits = new Collider[GroundBufferSize];
 
     private Rigidbody rb;
     private PlayerInputActions playerInput;
+
+    private IMovingPlatform platform;
+    private Vector3 appliedPlatformVelocity;
+    private float airTime;
 
     private bool justJumped;
     private bool justLanded;
@@ -34,6 +48,18 @@ public class PlayerController : MonoBehaviour
     public bool IsGrounded => isGrounded;
     public bool IsSprinting => playerInput.Player.Sprint.IsPressed();
     public PlayerInputActions InputActions => playerInput;
+    public Camera PlayerCamera => playerCamera;
+
+    /// <summary>Horizontal speed relative to whatever the player stands on (ignores the ship's own movement).</summary>
+    public float HorizontalSpeed
+    {
+        get
+        {
+            Vector3 relative = rb.linearVelocity - appliedPlatformVelocity;
+            relative.y = 0f;
+            return relative.magnitude;
+        }
+    }
 
     void Awake()
     {
@@ -42,6 +68,8 @@ public class PlayerController : MonoBehaviour
 
         rb.useGravity = false;
         rb.constraints = RigidbodyConstraints.FreezeRotation;
+
+        if (mouseLook == null) mouseLook = GetComponentInChildren<MouseLook>();
 
         currentSpeed = moveSpeed;
     }
@@ -65,6 +93,13 @@ public class PlayerController : MonoBehaviour
             verticalVel = jumpForce;
             justJumped = true;
         }
+    }
+
+    void Update()
+    {
+        // Rotate the view with the ship so turning the ship feels like turning with it.
+        if (inheritPlatformYaw && platform != null)
+            mouseLook.AddYaw(platform.YawRate * Time.deltaTime);
     }
 
     void FixedUpdate()
@@ -105,32 +140,31 @@ public class PlayerController : MonoBehaviour
         float inputX = moveInput.x * currentSpeed * airControl;
         float inputY = moveInput.y * currentSpeed * airControl;
 
-        Vector3 currentLocalVel = new Vector3(
-            rb.linearVelocity.x,
+        // Everything below works relative to the platform, then the platform's motion is added back on top.
+        Vector3 platformVel = platform != null
+            ? platform.GetPointVelocity(rb.position)
+            : Vector3.zero;
+        appliedPlatformVelocity = platformVel;
+
+        Vector3 currentRelativeVel = new Vector3(
+            rb.linearVelocity.x - platformVel.x,
             verticalVel,
-            rb.linearVelocity.z
+            rb.linearVelocity.z - platformVel.z
         );
 
-        Vector3 localVel = Quaternion.Euler(
+        Vector3 desiredRelativeVel = Quaternion.Euler(
             0f,
-            mouseLook.currentYaw,
+            mouseLook.CurrentYaw,
             0f
         ) * new Vector3(inputX, 0f, inputY);
 
-        localVel.y = verticalVel;
+        desiredRelativeVel.y = verticalVel;
 
-        if (!isGrounded)
-        {
-            rb.linearVelocity = Vector3.Lerp(
-                currentLocalVel,
-                localVel,
-                3f * Time.fixedDeltaTime
-            );
-        }
-        else
-        {
-            rb.linearVelocity = localVel;
-        }
+        Vector3 relativeVel = isGrounded
+            ? desiredRelativeVel
+            : Vector3.Lerp(currentRelativeVel, desiredRelativeVel, 3f * Time.fixedDeltaTime);
+
+        rb.linearVelocity = relativeVel + platformVel;
     }
 
     void HandleGravity()
@@ -146,11 +180,44 @@ public class PlayerController : MonoBehaviour
         Vector3 castPos = transform.position +
                           (Vector3.down * castPosOffset);
 
-        isGrounded = Physics.CheckSphere(
+        int hitCount = Physics.OverlapSphereNonAlloc(
             castPos,
             sphereRadius,
-            layerMask
+            groundHits,
+            layerMask,
+            QueryTriggerInteraction.Ignore
         );
+
+        isGrounded = hitCount > 0;
+
+        UpdatePlatform(FindPlatform(hitCount));
+    }
+
+    // Looks through whatever the ground check touched for a moving platform (a ship's Rigidbody).
+    IMovingPlatform FindPlatform(int hitCount)
+    {
+        for (int i = 0; i < hitCount; i++)
+        {
+            Rigidbody body = groundHits[i].attachedRigidbody;
+            if (body != null && body.TryGetComponent(out IMovingPlatform found))
+                return found;
+        }
+        return null;
+    }
+
+    void UpdatePlatform(IMovingPlatform groundPlatform)
+    {
+        if (isGrounded)
+        {
+            platform = groundPlatform;   // null when standing on static ground (island)
+            airTime = 0f;
+            return;
+        }
+
+        // Airborne: keep the ship's motion briefly so jumping on deck feels right, but not forever
+        // (otherwise jumping overboard would carry you along with the ship).
+        airTime += Time.fixedDeltaTime;
+        if (airTime > platformDetachTime) platform = null;
     }
 
     public bool ConsumeJustJumped()
